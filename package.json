@@ -1,0 +1,21 @@
+{
+  "name": "algorithm-lab-3d",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "test": "node src/tests.js",
+    "build:windows": "powershell -NoProfile -File scripts/build-windows.ps1",
+    "preview": "node preview.mjs"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

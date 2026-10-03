@@ -1,0 +1,25 @@
+node_modules/
+dist/
+cpp-check/
+
+# Environment and local secrets
+.env
+.env.*
+*.env
+*.env.*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+~$*
+.cache/
+.tmp/
+tmp/
+temp/
+coverage/
+.DS_Store
+Thumbs.db
