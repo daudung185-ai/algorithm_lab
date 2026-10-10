@@ -86,6 +86,226 @@ test('Queue: FIFO and both pointers after last dequeue; repeated drain/refill',(
   assert.match(run(queue,s,'front').result,/std::nullopt/);assert.match(run(queue,s,'rear').result,/std::nullopt/);
  }
 });
+test('Queue: Interleaved enqueue and dequeue operations maintain FIFO order, pointers, and reference state across fluctuating lengths',()=>{
+ let s=empty(queue);
+ const reference=[];
+ const actions=[3,-1,4,-2,2,-5,6,-3,2,-6];
+ let counter=1;
+ function assertQueueState(state,ref){
+  assert.deepEqual(values(queue,state),ref);
+  assert.equal(state.nodes.length,ref.length);
+  const nodeIds=state.nodes.map(n=>n.id);
+  assert.equal(new Set(nodeIds).size,state.nodes.length);
+  if(ref.length===0){
+   assert.equal(state.front,null);
+   assert.equal(state.rear,null);
+   assert.equal(run(queue,state,'front').result,'Queue rỗng: std::nullopt');
+   assert.equal(run(queue,state,'rear').result,'Queue rỗng: std::nullopt');
+   assert.deepEqual(run(queue,state,'traverse').frames.at(-1).output,[]);
+  }else{
+   assert.equal(state.front,nodeIds[0]);
+   assert.equal(state.rear,nodeIds.at(-1));
+   assert.equal(run(queue,state,'front').result,`Front: ${ref[0]}`);
+   assert.equal(run(queue,state,'rear').result,`Rear: ${ref.at(-1)}`);
+   assert.deepEqual(run(queue,state,'traverse').frames.at(-1).output,ref);
+  }
+ }
+ for(const act of actions){
+  if(act>0){
+   for(let i=0;i<act;i++){
+    const val=counter++;
+    const t=run(queue,s,'enqueue',val);
+    s=t.final;
+    reference.push(val);
+    assert.equal(t.result,`Queue: ${reference.join(', ')}`);
+    assertQueueState(s,reference);
+   }
+  }else{
+   for(let i=0;i<-act;i++){
+    const expectedVal=reference.shift();
+    const t=run(queue,s,'dequeue');
+    s=t.final;
+    const match=t.result.match(/^Đã dequeue: (-?\d+) · Queue: (.*)$/);
+    assert.ok(match,'dequeue result must match message pattern');
+    assert.equal(Number(match[1]),expectedVal);
+    assert.equal(match[2],reference.length?reference.join(', '):'rỗng');
+    assertQueueState(s,reference);
+   }
+  }
+ }
+ assert.equal(s.nodes.length,0);
+});
+test('Queue: Streaming single-item churn preserves front/rear synchronization and monotonic ID generation',()=>{
+ let s=empty(queue);
+ let expectedNextId=s.nextId;
+ const historicalIds=new Set();
+ for(let i=100;i<150;i++){
+  const enq=run(queue,s,'enqueue',i);
+  s=enq.final;
+  assert.equal(s.nodes.length,1);
+  assert.equal(s.front,s.rear);
+  assert.equal(s.nodes[0].value,i);
+  assert.equal(s.front,s.nodes[0].id);
+
+  const newId=s.nodes[0].id;
+  assert.equal(newId,expectedNextId,'newly allocated node ID must match state.nextId prior to allocation');
+  assert.ok(!historicalIds.has(newId),'allocated node ID must be globally unique across all churn cycles');
+  historicalIds.add(newId);
+  expectedNextId++;
+  assert.equal(s.nextId,expectedNextId,'state.nextId must increment monotonically after allocation');
+
+  assert.equal(run(queue,s,'front').result,`Front: ${i}`);
+  assert.equal(run(queue,s,'rear').result,`Rear: ${i}`);
+
+  const deq=run(queue,s,'dequeue');
+  s=deq.final;
+  assert.equal(s.nodes.length,0);
+  assert.equal(s.front,null);
+  assert.equal(s.rear,null);
+
+  const match=deq.result.match(/^Đã dequeue: (-?\d+) · Queue: rỗng$/);
+  assert.ok(match,'dequeue result must match empty queue format');
+  assert.equal(Number(match[1]),i);
+
+  assert.equal(run(queue,s,'front').result,'Queue rỗng: std::nullopt');
+  assert.equal(run(queue,s,'rear').result,'Queue rỗng: std::nullopt');
+ }
+ assert.equal(historicalIds.size,50);
+ assert.equal(s.nextId,expectedNextId);
+});
+test('Queue: Edge cases on empty queue, multiple consecutive underflows, and empty-to-singleton transitions',()=>{
+ let s=empty(queue);
+ assert.equal(s.nodes.length,0);
+ assert.equal(s.front,null);
+ assert.equal(s.rear,null);
+ for(let i=0;i<5;i++){
+  const underflow=run(queue,s,'dequeue');
+  assert.equal(underflow.result,'Queue rỗng: std::nullopt');
+  assert.equal(underflow.final.nodes.length,0);
+  assert.equal(underflow.final.front,null);
+  assert.equal(underflow.final.rear,null);
+  assert.deepEqual(underflow.final.nodes,[]);
+  s=underflow.final;
+ }
+ assert.equal(run(queue,s,'front').result,'Queue rỗng: std::nullopt');
+ assert.equal(run(queue,s,'rear').result,'Queue rỗng: std::nullopt');
+ assert.deepEqual(run(queue,s,'traverse').frames.at(-1).output,[]);
+
+ const one=run(queue,s,'enqueue',42).final;
+ assert.equal(one.nodes.length,1);
+ assert.equal(one.front,one.rear);
+ assert.equal(one.front,one.nodes[0].id);
+ assert.equal(run(queue,one,'front').result,'Front: 42');
+ assert.equal(run(queue,one,'rear').result,'Rear: 42');
+
+ const drained=run(queue,one,'dequeue');
+ const match=drained.result.match(/^Đã dequeue: (-?\d+) · Queue: rỗng$/);
+ assert.ok(match,'dequeue result must match empty queue format');
+ assert.equal(Number(match[1]),42);
+ assert.equal(drained.final.nodes.length,0);
+ assert.equal(drained.final.front,null);
+ assert.equal(drained.final.rear,null);
+
+ const refilled=run(queue,drained.final,'enqueue',99).final;
+ assert.equal(refilled.nodes.length,1);
+ assert.equal(refilled.front,refilled.rear);
+ assert.equal(refilled.front,refilled.nodes[0].id);
+ assert.equal(run(queue,refilled,'front').result,'Front: 99');
+ assert.equal(run(queue,refilled,'rear').result,'Rear: 99');
+});
+test('Queue: Handles extreme integer values, negatives, zero, and duplicate elements with distinct identities',()=>{
+ const extremes=[-2147483648,0,2147483647,-9999];
+ let s=empty(queue);
+ for(const v of extremes)s=run(queue,s,'enqueue',v).final;
+ assert.deepEqual(values(queue,s),extremes);
+ assert.equal(run(queue,s,'front').result,'Front: -2147483648');
+ assert.equal(run(queue,s,'rear').result,'Rear: -9999');
+
+ const remainingExtremes=[...extremes];
+ while(remainingExtremes.length){
+  const expected=remainingExtremes.shift();
+  const deq=run(queue,s,'dequeue');
+  s=deq.final;
+  const match=deq.result.match(/^Đã dequeue: (-?\d+) · Queue: (.*)$/);
+  assert.ok(match,'dequeue result must match message pattern');
+  assert.equal(Number(match[1]),expected);
+  assert.deepEqual(values(queue,s),remainingExtremes);
+  if(remainingExtremes.length){
+   assert.equal(run(queue,s,'front').result,`Front: ${remainingExtremes[0]}`);
+   assert.equal(run(queue,s,'rear').result,`Rear: ${remainingExtremes.at(-1)}`);
+  }else{
+   assert.equal(s.front,null);
+   assert.equal(s.rear,null);
+   assert.equal(run(queue,s,'front').result,'Queue rỗng: std::nullopt');
+   assert.equal(run(queue,s,'rear').result,'Queue rỗng: std::nullopt');
+  }
+ }
+
+ let dupQueue=empty(queue);
+ const dupValues=[7,7,7];
+ for(const v of dupValues)dupQueue=run(queue,dupQueue,'enqueue',v).final;
+ assert.deepEqual(values(queue,dupQueue),[7,7,7]);
+ assert.equal(dupQueue.nodes.length,3);
+ const ids=dupQueue.nodes.map(n=>n.id);
+ assert.equal(new Set(ids).size,3);
+ assert.equal(dupQueue.front,ids[0]);
+ assert.equal(dupQueue.rear,ids[2]);
+
+ const remainingDups=[...dupValues];
+ while(remainingDups.length){
+  const deq=run(queue,dupQueue,'dequeue');
+  dupQueue=deq.final;
+  const match=deq.result.match(/^Đã dequeue: (-?\d+) · Queue: (.*)$/);
+  assert.ok(match,'dequeue result must match message pattern');
+  assert.equal(Number(match[1]),remainingDups.shift());
+  assert.deepEqual(values(queue,dupQueue),remainingDups);
+  if(remainingDups.length===2){
+   assert.equal(dupQueue.front,ids[1]);
+   assert.equal(dupQueue.rear,ids[2]);
+  }else if(remainingDups.length===1){
+   assert.equal(dupQueue.front,ids[2]);
+   assert.equal(dupQueue.rear,ids[2]);
+  }else{
+   assert.equal(dupQueue.front,null);
+   assert.equal(dupQueue.rear,null);
+   assert.equal(dupQueue.nodes.length,0);
+  }
+ }
+});
+test('Queue: Read-only operations (front, rear, traverse) do not mutate state, advance IDs, or consume elements',()=>{
+ for(const initialValues of [[],[15],[10,20,30]]){
+  const s=build(queue,initialValues);
+  const before=copy(s);
+  for(let i=0;i<3;i++){
+   const f=run(queue,s,'front');
+   assert.deepEqual(s,before,'front mutated caller state');
+   assert.deepEqual(f.final,before,'front modified final state');
+   assert.equal(s.nextId,before.nextId);
+   if(initialValues.length)assert.equal(f.result,`Front: ${initialValues[0]}`);
+   else assert.equal(f.result,'Queue rỗng: std::nullopt');
+
+   const r=run(queue,s,'rear');
+   assert.deepEqual(s,before,'rear mutated caller state');
+   assert.deepEqual(r.final,before,'rear modified final state');
+   assert.equal(s.nextId,before.nextId);
+   if(initialValues.length)assert.equal(r.result,`Rear: ${initialValues.at(-1)}`);
+   else assert.equal(r.result,'Queue rỗng: std::nullopt');
+
+   const t=run(queue,s,'traverse');
+   assert.deepEqual(s,before,'traverse mutated caller state');
+   assert.deepEqual(t.final,before,'traverse modified final state');
+   assert.equal(s.nextId,before.nextId);
+   assert.deepEqual(t.frames.at(-1).output,initialValues);
+  }
+  assert.deepEqual(values(queue,s),initialValues);
+  if(initialValues.length){
+   const dequeued=run(queue,s,'dequeue');
+   const match=dequeued.result.match(/^Đã dequeue: (-?\d+) · Queue: (.*)$/);
+   assert.ok(match,'dequeue result must match message pattern');
+   assert.equal(Number(match[1]),initialValues[0]);
+  }
+ }
+});
 test('Heap: min/max insert and extraction match sorted reference across duplicate/extreme/random values',()=>{
  let seed=17;const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed%101-50;};
  for(const mode of ['min','max']){
